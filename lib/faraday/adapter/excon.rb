@@ -18,14 +18,11 @@ module Faraday
       ].freeze
 
       def build_connection(env)
-        if @connection_options[:persistent] && defined?(@connection)
-          return @connection
-        end
+        return @connection if @connection_options[:persistent] && defined?(@connection)
 
         opts = opts_from_env(env)
 
-        # remove path & query when creating connection
-        # because if it is persistent, it can re-use the conn
+        # remove path & query, because persistent can re-use connection
         url = env[:url].dup
         url.path = ''
         url.query = nil
@@ -45,16 +42,21 @@ module Faraday
         }
 
         req = env[:request]
-        if req&.stream_response?
+        yielded = false
+        if env.stream_response?
           total = 0
           req_opts[:response_block] = lambda do |chunk, _remain, _total|
-            req.on_data.call(chunk, total += chunk.size)
+            yielded = true
+            req.on_data.call(chunk, total += chunk.bytesize, env)
           end
         end
 
         resp = connect_and_request(env, req_opts)
-        save_response(env, resp.status.to_i, resp.body, resp.headers,
-                      resp.reason_phrase)
+
+        # duplicate env.stream_response helper behavior for empty streams
+        req.on_data.call(+'', 0, env) if req&.stream_response? && !yielded
+
+        save_response(env, resp.status.to_i, resp.body, resp.headers, resp.reason_phrase)
 
         @app.call(env)
       end
